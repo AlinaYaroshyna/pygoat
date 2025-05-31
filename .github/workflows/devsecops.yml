@@ -36,10 +36,11 @@ jobs:
           -J zap_pygoat_report.json
 
     - name: Upload ZAP HTML report
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v2
       with:
-        name: zap-report-html
-        path: zap_pygoat_report.html
+          name: zap-report-html
+          path: zap_pygoat_report.html
+
 
     - name: Stop and remove PyGoat container
       run: docker rm -f pygoat-app
