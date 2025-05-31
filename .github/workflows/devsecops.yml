@@ -1,7 +1,10 @@
 name: DAST Scan Only (PyGoat)
 
 on:
-  workflow_dispatch:  # uruchamiany ręcznie z GitHub UI
+  push:
+    branches: [ "master" ]
+  pull_request:
+    branches: [ "master" ]
 
 jobs:
   dast:
@@ -23,23 +26,23 @@ jobs:
 
     - name: Run PyGoat container in background
       run: |
-        docker run -d -p 5000:5000 --name pygoat-app pygoat:latest
+        docker run -d -p 3000:3000 --name pygoat-app pygoat:latest
         sleep 20  # daj aplikacji czas na start
 
     - name: Run OWASP ZAP DAST scan
       run: |
         docker run --network="host" \
           owasp/zap2docker-stable zap-baseline.py \
-          -t http://localhost:5000 \
+          -t http://localhost:3000 \
           -r zap_pygoat_report.html \
           -m 5 \
           -J zap_pygoat_report.json
 
-    - name: Upload ZAP HTML report
-      uses: actions/upload-artifact@v2
-      with:
-          name: zap-report-html
-          path: zap_pygoat_report.html
+#    - name: Upload ZAP HTML report
+#      uses: actions/upload-artifact@v2
+#      with:
+#          name: zap-report-html
+#          path: zap_pygoat_report.html
 
 
     - name: Stop and remove PyGoat container
