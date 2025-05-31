@@ -1,35 +1,45 @@
-name: DevSecOps Pipeline - PyGoat
+name: DAST Scan Only (PyGoat)
 
 on:
-  push:
-    branches:
-      - main
-  pull_request:
-    branches:
-      - main
+  workflow_dispatch:  # uruchamiany ręcznie z GitHub UI
 
 jobs:
-  build-and-test:
+  dast:
     runs-on: ubuntu-latest
+    services:
+      docker:
+        image: docker:20.10.16
+        options: --privileged
 
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v3
+    - name: Checkout repo
+      uses: actions/checkout@v3
 
-      - name: Set up Python 3.10
-        uses: actions/setup-python@v4
-        with:
-          python-version: '3.10'
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v2
 
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
+    - name: Build PyGoat image
+      run: docker build -t pygoat:latest .
 
-      - name: Run tests with pytest
-        run: |
-          pip install pytest
-          pytest tests/
+    - name: Run PyGoat container in background
+      run: |
+        docker run -d -p 5000:5000 --name pygoat-app pygoat:latest
+        sleep 20  # daj aplikacji czas na start
 
-      - name: Build Docker image
-        run: docker build -t pygoat:latest .
+    - name: Run OWASP ZAP DAST scan
+      run: |
+        docker run --network="host" \
+          owasp/zap2docker-stable zap-baseline.py \
+          -t http://localhost:5000 \
+          -r zap_pygoat_report.html \
+          -m 5 \
+          -J zap_pygoat_report.json
+
+    - name: Upload ZAP HTML report
+      uses: actions/upload-artifact@v3
+      with:
+        name: zap-report-html
+        path: zap_pygoat_report.html
+
+    - name: Stop and remove PyGoat container
+      run: docker rm -f pygoat-app
