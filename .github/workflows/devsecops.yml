@@ -26,17 +26,17 @@ jobs:
 
     - name: Run PyGoat container
       run: |
-        docker run -d --name pygoat-app -p 5000:5000 pygoat:latest
+        docker run -d --name pygoat-app -p 8000:8000 pygoat:latest
         sleep 15  # Czekaj aż aplikacja się uruchomi
 
     - name: Check if PyGoat is reachable
-      run: curl -I http://localhost:5000 || echo "❌ PyGoat is not responding"
+      run: curl -I http://localhost:8000 || echo "❌ PyGoat is not responding"
 
     - name: Run OWASP ZAP DAST scan
       run: |
         docker run --rm --link pygoat-app:pygoat \
-          owasp/zap2docker-stable zap-baseline.py \
-          -t http://pygoat:5000 \
+          ghcr.io/zaproxy/zap-stable zap-baseline.py \
+          -t http://pygoat:8000 \
           -r zap_pygoat_report.html \
           -J zap_pygoat_report.json
 
