@@ -21,29 +21,34 @@ jobs:
     - name: Set up Docker Buildx
       uses: docker/setup-buildx-action@v2
 
-    - name: Build PyGoat image
+    - name: Build PyGoat Docker image
       run: docker build -t pygoat:latest .
 
-    - name: Run PyGoat container in background
+    - name: Run PyGoat container
       run: |
-        docker run -d -p 3000:3000 --name pygoat-app pygoat:latest
-        sleep 20  # daj aplikacji czas na start
+        docker run -d --name pygoat-app -p 5000:5000 pygoat:latest
+        sleep 15  # Czekaj aż aplikacja się uruchomi
+
+    - name: Check if PyGoat is reachable
+      run: curl -I http://localhost:5000 || echo "❌ PyGoat is not responding"
 
     - name: Run OWASP ZAP DAST scan
       run: |
-        docker run --network="host" \
+        docker run --rm --link pygoat-app:pygoat \
           owasp/zap2docker-stable zap-baseline.py \
-          -t http://localhost:3000 \
+          -t http://pygoat:5000 \
           -r zap_pygoat_report.html \
-          -m 5 \
           -J zap_pygoat_report.json
 
+    - name: Show PyGoat logs (on failure)
+      if: failure()
+      run: docker logs pygoat-app
+
 #    - name: Upload ZAP HTML report
-#      uses: actions/upload-artifact@v2
+#      uses: actions/upload-artifact@v4
 #      with:
 #          name: zap-report-html
 #          path: zap_pygoat_report.html
-
 
     - name: Stop and remove PyGoat container
       run: docker rm -f pygoat-app
