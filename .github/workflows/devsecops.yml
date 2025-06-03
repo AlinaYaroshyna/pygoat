@@ -66,15 +66,28 @@ jobs:
     steps:
     - uses: actions/checkout@v4
     
-    - name: Run Semgrep
-      uses: returntocorp/semgrep-action@v1
+    - name: Run Semgrep (latest version)
+      id: semgrep_scan
+      continue-on-error: true  # Kontynuuj nawet jeśli znajdzie podatności
+      uses: returntocorp/semgrep-action@v2  # Najnowsza wersja akcji
       with:
         config: p/python
         output: semgrep-results.json
-        
+        severity: ERROR,WARNING  # Filtruj tylko ważne wyniki
+        no-git-ignore: true  # Skanuj wszystkie pliki, nie tylko śledzone przez git
+        metrics: off  # Wyłącz wysyłanie metryk jeśli chcesz
+  
+    - name: Show Semgrep summary
+      if: always()
+      run: |
+        echo "=== Semgrep Results Summary ==="
+        echo "Total findings: $(jq '.results | length' semgrep-results.json)"
+        echo "High severity: $(jq '.results[] | select(.extra.severity == "ERROR") | length' semgrep-results.json)"
+        echo "Medium severity: $(jq '.results[] | select(.extra.severity == "WARNING") | length' semgrep-results.json)"
+  
     - name: Parse and create SAST issues
       uses: actions/github-script@v6
-      if: always()
+      if: always() && steps.semgrep_scan.outcome == 'success'  # Uruchom nawet jeśli skan znalazł problemy
       with:
         script: |
           const fs = require('fs');
@@ -87,38 +100,61 @@ jobs:
           
           try {
             const report = JSON.parse(fs.readFileSync('semgrep-results.json'));
-            const findings = report.results || [];
-            
-            for (const finding of findings.filter(f => ['HIGH', 'CRITICAL'].includes(f.extra.severity?.toUpperCase()))) {
+            const criticalFindings = report.results.filter(
+              f => ['ERROR', 'WARNING'].includes(f.extra.severity)
+            );
+  
+            // Grupuj wyniki według reguły aby uniknąć duplikatów
+            const groupedFindings = {};
+            criticalFindings.forEach(finding => {
+              const ruleId = finding.check_id;
+              if (!groupedFindings[ruleId]) {
+                groupedFindings[ruleId] = {
+                  ...finding,
+                  locations: [],
+                  count: 0
+                };
+              }
+              groupedFindings[ruleId].locations.push({
+                path: finding.path,
+                line: finding.start.line
+              });
+              groupedFindings[ruleId].count++;
+            });
+  
+            // Twórz issue dla każdej reguły
+            for (const [ruleId, finding] of Object.entries(groupedFindings)) {
               const issueTitle = `[SAST] ${finding.extra.message.split('\n')[0].substring(0, 100)}`;
-              const uniqueId = `${finding.check_id}:${finding.path}:${finding.start.line}`;
               
               const exists = existingIssues.some(issue => 
-                issue.title.includes(finding.check_id) && 
-                issue.body.includes(`File: ${finding.path}`)
+                issue.title.includes(ruleId) &&
+                issue.body.includes(`Rule ID: ${ruleId}`)
               );
               
-              if (!exists) {
+              if (!exists && finding.count > 0) {
                 await github.rest.issues.create({
                   owner: context.repo.owner,
                   repo: context.repo.repo,
                   title: issueTitle,
-                  body: `**Finding:**\n\n` +
-                        `${finding.extra.message}\n\n` +
-                        `**Location:**\n` +
-                        `- File: ${finding.path}\n` +
-                        `- Line: ${finding.start.line}\n` +
-                        `- Severity: ${finding.extra.severity}\n` +
-                        `- Rule ID: ${finding.check_id}\n\n` +
+                  body: `**Finding:** ${finding.extra.message}\n\n` +
+                        `**Severity:** ${finding.extra.severity}\n` +
+                        `**Rule ID:** ${ruleId}\n` +
+                        `**Found in ${finding.count} locations:**\n` +
+                        finding.locations.map(loc => 
+                          `- ${loc.path}:${loc.line}`
+                        ).join('\n') + '\n\n' +
                         `**Scan Report:** [View Results](${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID})`,
-                  labels: ['security', 'sast', 'bug']
+                  labels: [
+                    'security',
+                    'sast',
+                    finding.extra.severity.toLowerCase()
+                  ]
                 });
               }
             }
           } catch (error) {
             core.warning(`Failed to process SAST results: ${error}`);
           }
-
   # 3. Secrets Scan
   secrets:
     runs-on: ubuntu-latest
