@@ -18,10 +18,16 @@ jobs:
       run: |
         pip install pip-audit
         pip-audit --format json --output pip-audit-results.json || echo "SCA scan completed with findings"
-        
+
+    - name: Upload SCA results
+      uses: actions/upload-artifact@v4
+      with:
+        name: pip-audit-results
+        path: pip-audit-results.json
+
     - name: Parse and create SCA issues
       uses: actions/github-script@v6
-      if: success() || failure()  # Run even if previous step failed
+      if: success() || failure()
       with:
         script: |
           const fs = require('fs');
@@ -31,15 +37,15 @@ jobs:
             state: 'open',
             labels: 'security,sca'
           });
-          
+
           try {
             const report = JSON.parse(fs.readFileSync('pip-audit-results.json'));
             const vulns = report.vulnerabilities || [];
-            
-            for (const vuln of vulns.filter(v => ['HIGH', 'CRITICAL'].includes(v.severity?.toUpperCase()))) {
+
+            for (const vuln of vulns.filter(v => v.cvss?.baseScore >= 7.0)) {
               const issueTitle = `[SCA] ${vuln.name}@${vuln.installed_version}: ${vuln.description?.split('\n')[0] || 'No description'}`;
-              
               const exists = existingIssues.some(issue => issue.title.includes(vuln.name));
+              
               if (!exists) {
                 await github.rest.issues.create({
                   owner: context.repo.owner,
@@ -49,7 +55,7 @@ jobs:
                         `- Package: ${vuln.name}\n` +
                         `- Installed Version: ${vuln.installed_version}\n` +
                         `- Fixed Version: ${vuln.fixed_versions?.join(', ') || 'None'}\n` +
-                        `- Severity: ${vuln.severity}\n` +
+                        `- CVSS Score: ${vuln.cvss?.baseScore}\n` +
                         `- CVE: ${vuln.id}\n\n` +
                         `**Scan Report:** [View Results](${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID})`,
                   labels: ['security', 'sca', 'bug']
@@ -57,8 +63,9 @@ jobs:
               }
             }
           } catch (error) {
-            core.warning(`Failed to process SCA results: ${error}`);
+            console.warn(`Failed to process SCA results: ${error}`);
           }
+
 
   # 2. SAST (Static Analysis)
   sast:
@@ -139,7 +146,7 @@ jobs:
     - uses: actions/checkout@v4
       with:
         fetch-depth: 0
-        
+
     - name: Run Gitleaks
       uses: zricethezav/gitleaks-action@v2
       with:
@@ -147,7 +154,13 @@ jobs:
         redact: true
         report-format: json
         report-path: gitleaks-report.json
-        
+
+    - name: Upload Gitleaks results
+      uses: actions/upload-artifact@v4
+      with:
+        name: gitleaks-results
+        path: gitleaks-report.json
+
     - name: Parse and create Secrets issues
       uses: actions/github-script@v6
       if: always()
@@ -160,37 +173,34 @@ jobs:
             state: 'open',
             labels: 'security,secrets'
           });
-          
+
           try {
             const report = JSON.parse(fs.readFileSync('gitleaks-report.json'));
-            
+
             for (const finding of report) {
-              if (['HIGH', 'CRITICAL'].includes(finding.Match.toLowerCase())) {
-                const issueTitle = `[Secrets] Potential ${finding.RuleID} exposed in ${finding.File}`;
-                
-                const exists = existingIssues.some(issue => 
-                  issue.title.includes(finding.RuleID) && 
-                  issue.body.includes(`File: ${finding.File}`)
-                );
-                
-                if (!exists) {
-                  await github.rest.issues.create({
-                    owner: context.repo.owner,
-                    repo: context.repo.repo,
-                    title: issueTitle,
-                    body: `**Secret Type:** ${finding.RuleID}\n\n` +
-                          `**File:** ${finding.File}\n` +
-                          `**Line:** ${finding.StartLine}\n` +
-                          `**Match:** ${finding.Match.substring(0, 50)}... [REDACTED]\n\n` +
-                          `**Commit:** ${finding.Commit}\n\n` +
-                          `**Scan Report:** [View Results](${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID})`,
-                    labels: ['security', 'secrets', 'critical']
-                  });
-                }
+              const issueTitle = `[Secrets] Potential ${finding.RuleID} exposed in ${finding.File}`;
+              const exists = existingIssues.some(issue =>
+                issue.title.includes(finding.RuleID) &&
+                issue.body.includes(`File: ${finding.File}`)
+              );
+
+              if (!exists) {
+                await github.rest.issues.create({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  title: issueTitle,
+                  body: `**Secret Type:** ${finding.RuleID}\n\n` +
+                        `**File:** ${finding.File}\n` +
+                        `**Line:** ${finding.StartLine}\n` +
+                        `**Match:** ${finding.Match.substring(0, 50)}... [REDACTED]\n\n` +
+                        `**Commit:** ${finding.Commit}\n\n` +
+                        `**Scan Report:** [View Results](${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID})`,
+                  labels: ['security', 'secrets', 'critical']
+                });
               }
             }
           } catch (error) {
-            core.warning(`Failed to process Secrets results: ${error}`);
+            console.warn(`Failed to process Secrets results: ${error}`);
           }
 
   # 4. DAST (Dynamic Analysis) - Your existing ZAP scan
