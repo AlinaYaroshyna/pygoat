@@ -63,98 +63,104 @@ jobs:
   # 2. SAST (Static Analysis)
   sast:
     runs-on: ubuntu-latest
+    name: SAST Scan (Semgrep)
     steps:
-    - uses: actions/checkout@v4
-    
-    - name: Run Semgrep (latest version)
-      id: semgrep_scan
-      continue-on-error: true  # Kontynuuj nawet jeśli znajdzie podatności
-      uses: returntocorp/semgrep-action@v2  # Najnowsza wersja akcji
-      with:
-        config: p/python
-        output: semgrep-results.json
-        severity: ERROR,WARNING  # Filtruj tylko ważne wyniki
-        no-git-ignore: true  # Skanuj wszystkie pliki, nie tylko śledzone przez git
-        metrics: off  # Wyłącz wysyłanie metryk jeśli chcesz
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Potrzebne do pełnego skanowania historii Git
   
-    - name: Show Semgrep summary
-      if: always()
-      run: |
-        echo "=== Semgrep Results Summary ==="
-        echo "Total findings: $(jq '.results | length' semgrep-results.json)"
-        echo "High severity: $(jq '.results[] | select(.extra.severity == "ERROR") | length' semgrep-results.json)"
-        echo "Medium severity: $(jq '.results[] | select(.extra.severity == "WARNING") | length' semgrep-results.json)"
+      - name: Setup Semgrep
+        id: semgrep
+        uses: returntocorp/semgrep-action@v2
+        continue-on-error: true  # Kontynuuj nawet jeśli znajdzie podatności
+        with:
+          config: "p/python"
+          output: "semgrep-results.json"
+          args: "--metrics=off --no-git-ignore"  # Dodatkowe argumenty CLI
   
-    - name: Parse and create SAST issues
-      uses: actions/github-script@v6
-      if: always() && steps.semgrep_scan.outcome == 'success'  # Uruchom nawet jeśli skan znalazł problemy
-      with:
-        script: |
-          const fs = require('fs');
-          const { data: existingIssues } = await github.rest.issues.listForRepo({
-            owner: context.repo.owner,
-            repo: context.repo.repo,
-            state: 'open',
-            labels: 'security,sast'
-          });
-          
-          try {
-            const report = JSON.parse(fs.readFileSync('semgrep-results.json'));
-            const criticalFindings = report.results.filter(
-              f => ['ERROR', 'WARNING'].includes(f.extra.severity)
-            );
+      - name: Process findings
+        if: always()  # Uruchom nawet jeśli poprzedni krok failuje
+        run: |
+          echo "=== Semgrep Results ==="
+          if [ -f "semgrep-results.json" ]; then
+            echo "Total findings: $(jq '.results | length' semgrep-results.json)"
+            echo "High severity: $(jq '.results[] | select(.extra.severity == "ERROR") | length' semgrep-results.json || echo 0)"
+            echo "Medium severity: $(jq '.results[] | select(.extra.severity == "WARNING") | length' semgrep-results.json || echo 0)"
+          else
+            echo "No results file found"
+          fi
   
-            // Grupuj wyniki według reguły aby uniknąć duplikatów
-            const groupedFindings = {};
-            criticalFindings.forEach(finding => {
-              const ruleId = finding.check_id;
-              if (!groupedFindings[ruleId]) {
-                groupedFindings[ruleId] = {
-                  ...finding,
-                  locations: [],
-                  count: 0
-                };
-              }
-              groupedFindings[ruleId].locations.push({
-                path: finding.path,
-                line: finding.start.line
+      - name: Upload results
+        uses: actions/upload-artifact@v3
+        if: always()
+        with:
+          name: semgrep-results
+          path: semgrep-results.json
+  
+      - name: Create GitHub Issues
+        if: always() && github.event_name == 'push'  # Twórz issue tylko przy pushu
+        uses: actions/github-script@v6
+        env:
+          SCAN_RESULTS: ${{ toJson(steps.semgrep.outputs) }}
+        with:
+          script: |
+            try {
+              const fs = require('fs');
+              const { data: existingIssues } = await github.rest.issues.listForRepo({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                state: 'open',
+                labels: 'security,sast'
               });
-              groupedFindings[ruleId].count++;
-            });
   
-            // Twórz issue dla każdej reguły
-            for (const [ruleId, finding] of Object.entries(groupedFindings)) {
-              const issueTitle = `[SAST] ${finding.extra.message.split('\n')[0].substring(0, 100)}`;
-              
-              const exists = existingIssues.some(issue => 
-                issue.title.includes(ruleId) &&
-                issue.body.includes(`Rule ID: ${ruleId}`)
-              );
-              
-              if (!exists && finding.count > 0) {
-                await github.rest.issues.create({
-                  owner: context.repo.owner,
-                  repo: context.repo.repo,
-                  title: issueTitle,
-                  body: `**Finding:** ${finding.extra.message}\n\n` +
-                        `**Severity:** ${finding.extra.severity}\n` +
-                        `**Rule ID:** ${ruleId}\n` +
-                        `**Found in ${finding.count} locations:**\n` +
-                        finding.locations.map(loc => 
-                          `- ${loc.path}:${loc.line}`
-                        ).join('\n') + '\n\n' +
-                        `**Scan Report:** [View Results](${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID})`,
-                  labels: [
-                    'security',
-                    'sast',
-                    finding.extra.severity.toLowerCase()
-                  ]
+              if (fs.existsSync('semgrep-results.json')) {
+                const report = JSON.parse(fs.readFileSync('semgrep-results.json', 'utf8'));
+                const criticalFindings = report.results?.filter(f => 
+                  ['ERROR', 'WARNING'].includes(f.extra?.severity)
+                ) || [];
+  
+                // Grupowanie wyników
+                const findingsMap = new Map();
+                criticalFindings.forEach(finding => {
+                  const key = finding.check_id;
+                  if (!findingsMap.has(key)) {
+                    findingsMap.set(key, {
+                      ...finding,
+                      locations: []
+                    });
+                  }
+                  findingsMap.get(key).locations.push({
+                    file: finding.path,
+                    line: finding.start.line
+                  });
                 });
+  
+                // Tworzenie issue
+                for (const [ruleId, finding] of findingsMap) {
+                  const issueExists = existingIssues.some(
+                    issue => issue.title.includes(ruleId) && issue.labels.some(l => l.name === 'sast')
+                  );
+  
+                  if (!issueExists && finding.locations.length > 0) {
+                    await github.rest.issues.create({
+                      owner: context.repo.owner,
+                      repo: context.repo.repo,
+                      title: `[SAST] ${finding.extra.message.substring(0, 100)}`,
+                      body: `### ${finding.extra.severity} severity issue found\n\n` +
+                            `**Rule:** ${finding.check_id}\n` +
+                            `**Message:** ${finding.extra.message}\n\n` +
+                            `**Found in ${finding.locations.length} locations:**\n` +
+                            finding.locations.map(loc => `- \`${loc.file}:${loc.line}\``).join('\n') +
+                            `\n\n**Scan details:** [View run](${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID})`,
+                      labels: ['security', 'sast', finding.extra.severity.toLowerCase()]
+                    });
+                  }
+                }
               }
+            } catch (error) {
+              core.warning(`SAST issue creation failed: ${error}`);
             }
-          } catch (error) {
-            core.warning(`Failed to process SAST results: ${error}`);
-          }
   # 3. Secrets Scan
   secrets:
     runs-on: ubuntu-latest
