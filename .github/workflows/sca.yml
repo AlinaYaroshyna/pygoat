@@ -33,9 +33,9 @@ jobs:
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
         with:
-          args: --severity-threshold=high --fail-on=upgradable
+          args: --severity-threshold=high --fail-on=upgradable --sarif-file-output=snyk.sarif
           command: test
-        continue-on-error: true # Continue even if vulnerabilities are found to allow reporting
+        continue-on-error: true # Continue even if vulnerabilities or errors occur
 
       # Upload Snyk results to GitHub Security tab
       - name: Upload Snyk results
@@ -63,12 +63,16 @@ jobs:
         working-directory: ./pygoat
         continue-on-error: true
 
-      # Notify on failure (e.g., via Slack or email)
+      # Notify on failure (e.g., via Slack)
       - name: Notify on failure
         if: failure()
         uses: slackapi/slack-github-action@v1
         with:
           slack-bot-token: ${{ secrets.SLACK_BOT_TOKEN }}
+          channel-id: 'security-alerts'
+          text: 'SCA scan failed or encountered issues for PyGoat. Check GitHub Actions for details.'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           channel-id: 'security-alerts'
           text: 'SCA scan failed for PyGoat. Check GitHub Actions for details.'
         env:
