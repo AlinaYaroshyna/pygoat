@@ -2,6 +2,7 @@ name: DevSecOps SCA Pipeline for PyGoat
 
 on:
   workflow_dispatch:
+
 jobs:
   build-and-sca:
     runs-on: ubuntu-latest
@@ -44,7 +45,7 @@ jobs:
           sarif_file: snyk.sarif
         if: always()
 
-      # Run Dependabot dependency check
+      # Run Dependabot metadata (optional, not required for scanning)
       - name: Run Dependabot
         uses: dependabot/fetch-metadata@v2
         with:
@@ -56,7 +57,7 @@ jobs:
           docker build -f Dockerfile -t pygoat:latest .
         working-directory: ./pygoat
 
-      # Optional: Run the application in Docker for integration testing (if needed)
+      # Optional: Run the application in Docker for integration testing
       - name: Run Docker container
         run: |
           docker run --rm -d -p 8000:8000 pygoat:latest
@@ -71,9 +72,5 @@ jobs:
           slack-bot-token: ${{ secrets.SLACK_BOT_TOKEN }}
           channel-id: 'security-alerts'
           text: 'SCA scan failed or encountered issues for PyGoat. Check GitHub Actions for details.'
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          channel-id: 'security-alerts'
-          text: 'SCA scan failed for PyGoat. Check GitHub Actions for details.'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
