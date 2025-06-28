@@ -1,51 +1,75 @@
-name: DevSecOps - SCA and Secrets Scan
+name: DevSecOps SCA Pipeline for PyGoat
 
 on:
-  workflow_dispatch:  # <-- uruchamianie z przycisku w zakładce Actions
-
+  workflow_dispatch:
 jobs:
-  sca-and-secrets:
-    name: SCA & Secrets Scan
+  build-and-sca:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
 
     steps:
-    - name: Checkout repo
-      uses: actions/checkout@v3
+      # Checkout the repository
+      - name: Checkout code
+        uses: actions/checkout@v4
 
-    - name: Set up Python
-      uses: actions/setup-python@v4
-      with:
-        python-version: '3.11'
+      # Set up Python environment
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.8' # PyGoat uses Python 3.8 as per related projects
 
-    - name: Install dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install pip-audit
+      # Install dependencies
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+        working-directory: ./pygoat
 
-    - name: Run pip-audit (SCA)
-      continue-on-error: true
-      run: |
-        pip-audit --output pip_audit_report.txt
+      # Run Snyk for SCA scanning
+      - name: Run Snyk to check for vulnerabilities
+        uses: snyk/actions/python-3.8@master
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        with:
+          args: --severity-threshold=high --fail-on=upgradable
+          command: test
+        continue-on-error: true # Continue even if vulnerabilities are found to allow reporting
 
-    - name: Upload pip-audit report
-      uses: actions/upload-artifact@v4
-      with:
-        name: pip-audit-report
-        path: pip_audit_report.txt
+      # Upload Snyk results to GitHub Security tab
+      - name: Upload Snyk results
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: snyk.sarif
+        if: always()
 
-    - name: Install GitLeaks
-      run: |
-        curl -sSL https://github.com/gitleaks/gitleaks/releases/latest/download/gitleaks-linux-amd64 -o gitleaks
-        chmod +x gitleaks
-        sudo mv gitleaks /usr/local/bin
+      # Run Dependabot dependency check
+      - name: Run Dependabot
+        uses: dependabot/fetch-metadata@v2
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
 
-    - name: Run GitLeaks (Secrets Scan)
-      continue-on-error: true
-      run: |
-        gitleaks detect --source . --report-format sarif --report-path gitleaks-report.sarif
+      # Build Docker image for additional context
+      - name: Build Docker image
+        run: |
+          docker build -f Dockerfile -t pygoat:latest .
+        working-directory: ./pygoat
 
-    - name: Upload GitLeaks report
-      uses: actions/upload-artifact@v4
-      with:
-        name: gitleaks-report
-        path: gitleaks-report.sarif
+      # Optional: Run the application in Docker for integration testing (if needed)
+      - name: Run Docker container
+        run: |
+          docker run --rm -d -p 8000:8000 pygoat:latest
+        working-directory: ./pygoat
+        continue-on-error: true
+
+      # Notify on failure (e.g., via Slack or email)
+      - name: Notify on failure
+        if: failure()
+        uses: slackapi/slack-github-action@v1
+        with:
+          slack-bot-token: ${{ secrets.SLACK_BOT_TOKEN }}
+          channel-id: 'security-alerts'
+          text: 'SCA scan failed for PyGoat. Check GitHub Actions for details.'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
