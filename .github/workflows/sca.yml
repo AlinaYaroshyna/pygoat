@@ -1,76 +1,41 @@
-name: DevSecOps SCA Pipeline for PyGoat
+name: SCA scan for PyGoat
 
-on:
-  workflow_dispatch:
+on: [push]
 
 jobs:
-  build-and-sca:
+  depcheck_sca:
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      security-events: write
-
+    name: Dependency-Check SCA Scan
     steps:
-      # Checkout the repository
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v2
 
-      # Set up Python environment
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.8' # PyGoat uses Python 3.8 as per related projects
+          python-version: '3.10'
 
-      # Install dependencies
-      - name: Install dependencies
+      - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-        working-directory: ./pygoat
 
-      # Run Snyk for SCA scanning
-      - name: Run Snyk to check for vulnerabilities
-        uses: snyk/actions/python-3.8@master
-        env:
-          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+      - name: Run OWASP Dependency-Check
+        uses: dependency-check/Dependency-Check_Action@main
+        id: depcheck
         with:
-          args: --severity-threshold=high --fail-on=upgradable --sarif-file-output=snyk.sarif
-          command: test
-        continue-on-error: true # Continue even if vulnerabilities or errors occur
+          project: 'PyGoat'
+          path: '.'  # scan entire project
+          format: 'HTML'
+          out: 'reports'
+          args: >
+            --failOnCVSS 7
+            --enableRetired
+            --scan requirements.txt
+            --project PyGoat
 
-      # Upload Snyk results to GitHub Security tab
-      - name: Upload Snyk results
-        uses: github/codeql-action/upload-sarif@v3
+      - name: Upload DepCheck Report
+        uses: actions/upload-artifact@v3
         with:
-          sarif_file: snyk.sarif
-        if: always()
-
-      # Run Dependabot metadata (optional, not required for scanning)
-      - name: Run Dependabot
-        uses: dependabot/fetch-metadata@v2
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-
-      # Build Docker image for additional context
-      - name: Build Docker image
-        run: |
-          docker build -f Dockerfile -t pygoat:latest .
-        working-directory: ./pygoat
-
-      # Optional: Run the application in Docker for integration testing
-      - name: Run Docker container
-        run: |
-          docker run --rm -d -p 8000:8000 pygoat:latest
-        working-directory: ./pygoat
-        continue-on-error: true
-
-      # Notify on failure (e.g., via Slack)
-      - name: Notify on failure
-        if: failure()
-        uses: slackapi/slack-github-action@v1
-        with:
-          slack-bot-token: ${{ secrets.SLACK_BOT_TOKEN }}
-          channel-id: 'security-alerts'
-          text: 'SCA scan failed or encountered issues for PyGoat. Check GitHub Actions for details.'
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          name: DepCheck HTML Report
+          path: reports
