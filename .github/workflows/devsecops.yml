@@ -140,73 +140,25 @@ jobs:
               core.warning(`Failed to create issues: ${error}`);
             }
   # 3. Secrets Scan
-  secrets:
+  secrets-scan:
+    name: Gitleaks Secrets Scan
     runs-on: ubuntu-latest
+
     steps:
-    - uses: actions/checkout@v4
-      with:
-        fetch-depth: 0
+      - name: Checkout repository
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0  # Potrzebne do pełnego skanowania historii gita
 
-    - name: Run Gitleaks
-      uses: zricethezav/gitleaks-action@v2
-      with:
-        config-path: .gitleaks.toml
-        redact: true
-        report-format: json
-        report-path: gitleaks-report.json
-
-    - name: Upload Gitleaks results
-      uses: actions/upload-artifact@v4
-      with:
-        name: gitleaks-results
-        path: gitleaks-report.json
-
-    - name: Parse and create Secrets issues
-      uses: actions/github-script@v6
-      if: always()
-      with:
-        script: |
-          const fs = require('fs');
-          const { data: existingIssues } = await github.rest.issues.listForRepo({
-            owner: context.repo.owner,
-            repo: context.repo.repo,
-            state: 'open',
-            labels: 'security,secrets'
-          });
-
-          try {
-            const report = JSON.parse(fs.readFileSync('gitleaks-report.json'));
-
-            for (const finding of report) {
-              const issueTitle = `[Secrets] Potential ${finding.RuleID} exposed in ${finding.File}`;
-              const exists = existingIssues.some(issue =>
-                issue.title.includes(finding.RuleID) &&
-                issue.body.includes(`File: ${finding.File}`)
-              );
-
-              if (!exists) {
-                await github.rest.issues.create({
-                  owner: context.repo.owner,
-                  repo: context.repo.repo,
-                  title: issueTitle,
-                  body: `**Secret Type:** ${finding.RuleID}\n\n` +
-                        `**File:** ${finding.File}\n` +
-                        `**Line:** ${finding.StartLine}\n` +
-                        `**Match:** ${finding.Match.substring(0, 50)}... [REDACTED]\n\n` +
-                        `**Commit:** ${finding.Commit}\n\n` +
-                        `**Scan Report:** [View Results](${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID})`,
-                  labels: ['security', 'secrets', 'critical']
-                });
-              }
-            }
-          } catch (error) {
-            console.warn(`Failed to process Secrets results: ${error}`);
-          }
+      - name: Run Gitleaks scan
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   # 4. DAST (Dynamic Analysis) - Your existing ZAP scan
   dast:
     runs-on: ubuntu-latest
-    needs: [sca, sast, secrets]  # Run after other scans
+    needs: [sca, sast, secrets-scan]  # Run after other scans
     steps:
     - name: Checkout
       uses: actions/checkout@v4
